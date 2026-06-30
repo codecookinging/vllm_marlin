@@ -27,6 +27,7 @@
 #include "quantization/marlin/marlin_dtypes.cuh"
 #include "quantization/marlin/dequant.h"
 #include "quantization/marlin/marlin_mma.h"
+#include "marlin_hopper.cuh"
 #include "core/scalar_type.hpp"
 
 #define STATIC_ASSERT_SCALAR_TYPE_VALID(scalar_t)               \
@@ -950,9 +951,17 @@ __global__ void Marlin(
     if (is_async) {
       for (int i = 0; i < sh_num_groups; i++) {
         if (threadIdx.x < s_sh_stride) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+          // Scales are reused across the token batch — L2::128B hint.
+          marlin_hopper::cp_async4_l2_128(
+              &sh_s[(i * s_sh_stride) + threadIdx.x],
+              &scales_ptr[row_offset + (i * s_gl_stride) + slice_n_offset +
+                          threadIdx.x]);
+#else
           cp_async4_pred(&sh_s[(i * s_sh_stride) + threadIdx.x],
                          &scales_ptr[row_offset + (i * s_gl_stride) +
                                      slice_n_offset + threadIdx.x]);
+#endif
         }
       }
     } else {
@@ -978,8 +987,17 @@ __global__ void Marlin(
           sorted_row = sh_rd_block_sorted_ids[row];
         int64_t true_idx =
             sorted_row * a_gl_stride + a_gl_rd_col + a_gl_rd_delta_o * a_off;
+        // SM90: activations are gathered one row at a time.  Keep the normal
+        // .cg policy so these scattered reads bypass L1 without adding L2
+        // prefetch traffic for data that is unlikely to be reused.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+        marlin_hopper::cp_async4_pred_cg(&sh_a_stage[a_sh_wr_trans[i]],
+                                         &A[true_idx],
+                                         row < block_num_valid_tokens);
+#else
         cp_async4_pred(&sh_a_stage[a_sh_wr_trans[i]], &A[true_idx],
                        row < block_num_valid_tokens);
+#endif
       }
 
       int4* sh_b_stage = sh_b + b_sh_stage * pipe;
@@ -990,7 +1008,13 @@ __global__ void Marlin(
             b_gl_rd + (i % count) * threads +
             b_gl_stride * (i / count) * div_ceil(threads, b_sh_stride);
 
+        // SM90: weights are reused across the token batch — L2::128B hint.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+        marlin_hopper::cp_async4_l2_128(&sh_b_stage[threads * i + threadIdx.x],
+                                        &B[b_gl_idx]);
+#else
         cp_async4(&sh_b_stage[threads * i + threadIdx.x], &B[b_gl_idx]);
+#endif
       }
 
       b_gl_rd += b_gl_rd_delta_o;
@@ -1017,7 +1041,12 @@ __global__ void Marlin(
           // Only fetch scales if this tile starts a new group
           if (pipe % div_ceil(group_blocks, thread_k_blocks) == 0) {
             if (s_sh_wr_pred) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+              marlin_hopper::cp_async4_l2_128(&sh_s_stage[s_sh_wr],
+                                              &scales_ptr[s_gl_rd]);
+#else
               cp_async4(&sh_s_stage[s_sh_wr], &scales_ptr[s_gl_rd]);
+#endif
             }
             s_gl_rd += s_gl_rd_delta * s_tb_groups;
           }
@@ -1029,7 +1058,12 @@ __global__ void Marlin(
           // Only fetch zero points if this tile starts a new group
           if (pipe % div_ceil(group_blocks, thread_k_blocks) == 0) {
             if (zp_sh_wr_pred) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+              marlin_hopper::cp_async4_l2_128(&sh_zp_stage[zp_sh_wr],
+                                              &zp_ptr[zp_gl_rd]);
+#else
               cp_async4(&sh_zp_stage[zp_sh_wr], &zp_ptr[zp_gl_rd]);
+#endif
             }
             zp_gl_rd += zp_gl_rd_delta * zp_tb_groups;
           }
@@ -1043,13 +1077,21 @@ __global__ void Marlin(
 
   auto fetch_col_zp_to_shared = [&]() {
     if (zp_sh_wr_pred) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+      marlin_hopper::cp_async4_l2_128(&sh_zp[zp_sh_wr], &zp_ptr[zp_gl_rd]);
+#else
       cp_async4(&sh_zp[zp_sh_wr], &zp_ptr[zp_gl_rd]);
+#endif
     }
   };
 
   auto fetch_col_scale_to_shared = [&]() {
     if (s_sh_wr_pred) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+      marlin_hopper::cp_async4_l2_128(&sh_s[s_sh_wr], &scales_ptr[s_gl_rd]);
+#else
       cp_async4(&sh_s[s_sh_wr], &scales_ptr[s_gl_rd]);
+#endif
     }
   };
 
@@ -2064,8 +2106,15 @@ __global__ void Marlin(
                     (has_zp && dequant_skip_flop || !has_zp)) {
         if (b_type.size_bits() == 8 || (last || use_atomic_add) || is_a_8bit) {
           if (s_sh_wr_pred) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+            marlin_hopper::cp_async4_l2_128(&sh_s[s_sh_wr],
+                                            &scales_ptr[s_gl_rd]);
+#else
             cp_async4(&sh_s[s_sh_wr], &scales_ptr[s_gl_rd]);
+#endif
           }
+          // This fetch is outside the main K pipeline; use a regular
+          // commit-group fence before the existing wait path consumes it.
           cp_async_fence();
         }
       }

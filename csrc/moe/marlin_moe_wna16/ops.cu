@@ -126,16 +126,16 @@ thread_config_t small_batch_thread_configs[] = {
 
     // thread_k, thread_n, num_threads
     {128, 128, 256},
-    {64, 128, 128},
-    {128, 64, 128}};
+    // {64, 128, 128},
+    {64, 256, 128}};
 
 thread_config_t large_batch_thread_configs[] = {
     // Ordered by priority
 
     // thread_k, thread_n, num_threads
-    {64, 256, 256},
+    {64, 256, 128},
     {64, 128, 128},
-    {128, 64, 128}};
+    {128, 128, 128}};
 
 typedef struct {
   int blocks_per_sm;
@@ -687,6 +687,13 @@ torch::Tensor moe_wna16_marlin_gemm(
     c = torch::empty({size_m * top_k, size_n}, options);
   }
 
+  // Prefer direct output atomics over the serialized lock/C_tmp global reduce
+  // path. This keeps the Stream-K tail from paying a full FP32 temp-buffer
+  // reduction unless explicitly requested for debugging/accuracy checks.
+  const char* force_lock_reduce_env = std::getenv("MARLIN_MOE_FORCE_LOCK_REDUCE");
+  if (!(force_lock_reduce_env != nullptr && force_lock_reduce_env[0] == '1')) {
+    use_atomic_add = true;
+  }
   // Alloc C tmp buffer that is going to be used for the global reduce
   torch::Tensor c_tmp;
   if (use_fp32_reduce && !use_atomic_add) {
