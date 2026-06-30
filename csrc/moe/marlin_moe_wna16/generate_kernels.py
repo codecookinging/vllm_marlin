@@ -205,7 +205,7 @@ def generate_new_kernels():
                 if a_type in ["kFloat16", "kS8"] and c_type == "kFloat16":
                     sm_75_result_dict[(a_type, b_type, c_type)] = []
                 if SUPPORT_SM90:
-                sm_90_result_dict[(a_type, b_type, c_type)] = []
+                    sm_90_result_dict[(a_type, b_type, c_type)] = []
 
             for group_blocks, m_blocks, thread_configs in itertools.product(
                 all_group_blocks, all_m_blocks, all_thread_configs
