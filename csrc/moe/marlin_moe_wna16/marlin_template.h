@@ -1561,14 +1561,14 @@ __global__ void Marlin(
               int red_sh_wr =
                   red_sh_delta * j + (red_sh_rd - red_sh_stride * i);
               if (i < red_off) {
-                float* c_rd = reinterpret_cast<float*>(
-                    &sh_red[red_sh_delta * j + red_sh_rd]);
-                float* c_wr = reinterpret_cast<float*>(&sh_red[red_sh_wr]);
-  #pragma unroll
-                for (int k = 0; k < 4; k++)
-                  reinterpret_cast<FragC*>(
-                      frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + j][k] +=
-                      c_rd[k] + c_wr[k];
+                float4 c_rd = reinterpret_cast<float4*>(&sh_red[red_sh_delta * j + red_sh_rd])[0];
+                float4 c_wr = reinterpret_cast<float4*>(&sh_red[red_sh_wr])[0];
+                float4 f = reinterpret_cast<float4*>(&frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + j];
+                f.x += c_rd.x + c_wr.x;
+                f.y += c_rd.y + c_wr.y;
+                f.z += c_rd.z + c_wr.z;
+                f.w += c_rd.w + c_wr.w;
+                reinterpret_cast<float4*>(&frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + j] = f;
               }
               sh_red[red_sh_wr] = reinterpret_cast<int4*>(
                   &frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + j];
@@ -1580,12 +1580,13 @@ __global__ void Marlin(
   #pragma unroll
           for (int i = 0; i < (is_a_8bit ? 2 : 4) * 2;
                i += (m_block_size_8 ? 2 : 1)) {
-            float* c_rd =
-                reinterpret_cast<float*>(&sh_red[red_sh_delta * i + red_sh_rd]);
-  #pragma unroll
-            for (int j = 0; j < 4; j++)
-              reinterpret_cast<FragC*>(
-                  frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + i][j] += c_rd[j];
+            float4 c_rd = reinterpret_cast<float4*>(&sh_red[red_sh_delta * i + red_sh_rd])[0];
+            float4 f = reinterpret_cast<float4*>(&frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + i];
+            f.x += c_rd.x;
+            f.y += c_rd.y;
+            f.z += c_rd.z;
+            f.w += c_rd.w;
+            reinterpret_cast<float4*>(&frag_c)[(is_a_8bit ? 2 : 4) * 2 * m_block + i] = f;
           }
         }
         __syncthreads();
