@@ -53,6 +53,37 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
 
+_SHORT_BATCH_M_THRESHOLD = 2048
+_SHORT_BATCH_MOE_BLOCK_SIZE = 16
+_MOE_BLOCK_SIZE_CANDIDATES = [64, 48, 32, 16, 8]
+
+
+def get_adaptive_moe_block_size(
+    m: int,
+    topk: int,
+    num_experts: int,
+    input_dtype: torch.dtype | None = None,
+) -> int:
+    """Pick MoE align block size to reduce padding overhead.
+
+    Short batches (m <= 2048) use 16 tokens/block so Marlin stays on
+    thread_m_blocks == 1 (small-batch tile table). Longer batches may use
+    up to 64 when average tokens per expert fill blocks efficiently.
+    """
+    if m <= _SHORT_BATCH_M_THRESHOLD:
+        block_size_m = _SHORT_BATCH_MOE_BLOCK_SIZE
+    else:
+        block_size_m = 64
+        for candidate in _MOE_BLOCK_SIZE_CANDIDATES:
+            if m * topk / num_experts / candidate < 0.9:
+                block_size_m = candidate
+            else:
+                break
+
+    if input_dtype is not None and input_dtype.itemsize == 1:
+        block_size_m = max(block_size_m, _SHORT_BATCH_MOE_BLOCK_SIZE)
+    return block_size_m
+
 
 def _fused_marlin_moe(
     hidden_states: torch.Tensor,
@@ -315,17 +346,11 @@ def fused_marlin_moe(
     assert num_bits in [4, 8]
     assert topk_weights.dtype == torch.float32
 
-    # M block size selection logic
-    # TODO: tune this further for specific models
-    for block_size_m in [8, 16, 32, 48, 64]:
-        if M * topk / E / block_size_m < 0.9:
-            break
-
-    if input_dtype is not None and input_dtype.itemsize == 1:
-        block_size_m = max(block_size_m, 16)
-
     if global_num_experts == -1:
         global_num_experts = E
+    block_size_m = get_adaptive_moe_block_size(
+        M, topk, global_num_experts, input_dtype
+    )
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
         topk_ids,
         block_size_m,
@@ -483,17 +508,9 @@ def batched_fused_marlin_moe(
     # [B * MAX_TOKENS, K] and top_k can be interpreted as just 1.
     topk = 1
 
-    # TODO(varun) : Choose a decent block size like in fused_marlin_moe
-    # Tune block_size_m based on expert capacity to reduce padding overhead.
-    block_size_m = 64
-    for b_m in [8, 16, 32, 48, 64]:
-        if BATCH_TOKENS_MAX / b_m < 0.9:
-            block_size_m = b_m
-            break
-
-    if input_dtype is not None and input_dtype.itemsize == 1:
-        block_size_m = max(block_size_m, 16)
-
+    block_size_m = get_adaptive_moe_block_size(
+        BATCH_TOKENS_MAX, topk, 1, input_dtype
+    )
     sorted_token_ids, expert_ids, num_tokens_post_padded = batched_moe_align_block_size(
         max_tokens_per_batch=BATCH_TOKENS_MAX,
         block_size=block_size_m,

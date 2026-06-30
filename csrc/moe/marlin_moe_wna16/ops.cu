@@ -125,7 +125,7 @@ thread_config_t small_batch_thread_configs[] = {
     // Ordered by priority
 
     // thread_k, thread_n, num_threads
-    {128, 128, 256},
+    // {128, 128, 256},
     // {64, 128, 128},
     {64, 256, 128}};
 
