@@ -442,6 +442,8 @@ void marlin_mm(const void* A, const void* B, void* C, void* C_tmp, void* b_bias,
     stages = 2;
     TORCH_CHECK(a_type == vllm::kFloat16 || a_type == vllm::kS8,
                 "Turing only support FP16 or INT8 activation.");
+  } else if (major_capability >= 9) {
+    stages = 5;
   }
   if (a_type == vllm::kFE4M3fn) {
     TORCH_CHECK(major_capability * 10 + minor_capability >= 89,
@@ -466,11 +468,22 @@ void marlin_mm(const void* A, const void* B, void* C, void* C_tmp, void* b_bias,
                 " is not divisible by thread_k = ", thread_k);
   } else {
     // Auto config
+    const bool is_sm90 = major_capability >= 9;
     exec_cfg = determine_exec_config(
         a_type, b_type, c_type, s_type, prob_m, prob_n, prob_k, num_experts,
         top_k, thread_m_blocks, m_block_size_8, num_bits, group_size,
         has_act_order, is_k_full, has_zp, is_zp_float, is_a_8bit, stages,
         max_shared_mem, sms);
+    // On SM90+ we prefer stages=5 but fall back to stages=4 when the chosen
+    // tile configuration does not fit in shared memory at depth 5.
+    if (is_sm90 && stages == 5 && exec_cfg.tb_cfg.thread_k == -1) {
+      stages = 4;
+      exec_cfg = determine_exec_config(
+          a_type, b_type, c_type, s_type, prob_m, prob_n, prob_k, num_experts,
+          top_k, thread_m_blocks, m_block_size_8, num_bits, group_size,
+          has_act_order, is_k_full, has_zp, is_zp_float, is_a_8bit, stages,
+          max_shared_mem, sms);
+    }
     thread_tfg = exec_cfg.tb_cfg;
   }
 

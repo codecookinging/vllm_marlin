@@ -240,6 +240,12 @@ def generate_new_kernels():
                     config_sm75 = config.copy()
                     config_sm75["stages"] = 2
                     sm_75_result_dict[(a_type, b_type, c_type)].append(config_sm75)
+                # SM90 (H100): 5-stage pipeline — larger shared memory allows
+                # one extra prefetch stage to hide global memory latency.
+                if (a_type, b_type, c_type) in sm_90_result_dict and SUPPORT_SM90:
+                    config_sm90 = config.copy()
+                    config_sm90["stages"] = 5
+                    sm_90_result_dict[(a_type, b_type, c_type)].append(config_sm90)
 
     kernel_selector_str = FILE_HEAD_COMMENT
 

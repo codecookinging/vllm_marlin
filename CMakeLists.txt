@@ -1161,6 +1161,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   # - sm90 and sm100 don't support QMMA.16832.F32.E4M3.E4M3 SAAS instruction
   # so we only enable fp8 computation for SM89 (e.g. RTX 40x0)  and 12.0 (e.g. RTX 50x0)
   cuda_archs_loose_intersection(MARLIN_MOE_FP8_ARCHS "8.9;12.0;12.1" "${CUDA_ARCHS}")
+  # moe marlin stages=5 kernels for SM90+ (native codegen so __CUDA_ARCH__ >= 900
+  # paths in marlin_template.h / marlin_hopper.cuh are emitted)
+  cuda_archs_sm90plus(MARLIN_MOE_SM90_ARCHS "${CUDA_ARCHS}")
   # moe marlin arches for other files
   cuda_archs_loose_intersection(MARLIN_MOE_OTHER_ARCHS "7.5;8.0+PTX" "${CUDA_ARCHS}")
   if (MARLIN_MOE_OTHER_ARCHS)
@@ -1238,6 +1241,18 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
           PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
       endif()
       list(APPEND VLLM_MOE_EXT_SRC ${MARLIN_MOE_FP8_SRC})
+    endif()
+
+    if (MARLIN_MOE_SM90_ARCHS)
+      file(GLOB MARLIN_MOE_SM90_SRC "csrc/moe/marlin_moe_wna16/sm90_kernel_*.cu")
+      set_gencode_flags_for_srcs(
+        SRCS "${MARLIN_MOE_SM90_SRC}"
+        CUDA_ARCHS "${MARLIN_MOE_SM90_ARCHS}")
+      if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 12.8)
+        set_source_files_properties(${MARLIN_MOE_SM90_SRC}
+          PROPERTIES COMPILE_FLAGS "-static-global-template-stub=false")
+      endif()
+      list(APPEND VLLM_MOE_EXT_SRC ${MARLIN_MOE_SM90_SRC})
     endif()
 
     set(MARLIN_MOE_OTHER_SRC "csrc/moe/marlin_moe_wna16/ops.cu")
