@@ -9,7 +9,8 @@ latency stats using CUDA events.
 
 Timing modes (``--timing``):
 - event (default): one CUDA event pair per repeat; reports mean/p50/p95/std.
-- batch: one event pair around all repeats; reports average latency.
+- batch: one event pair around all repeats; reports average latency (fast
+  sanity checks / stable prefill regression).
 
 Default workloads target zai-org/GLM-5 at tensor-parallel size 8
 (K=6144, N=256, E=256, topk=8). Use ``--model generic`` for legacy shapes.
@@ -25,6 +26,9 @@ Example::
     .venv/bin/python benchmarks/kernels/benchmark_marlin_moe_ab.py --list-cases
     .venv/bin/python benchmarks/kernels/benchmark_marlin_moe_ab.py \\
         --mode single --model glm5 --repeat 200 --cases glm5_decode_m1
+    .venv/bin/python benchmarks/kernels/benchmark_marlin_moe_ab.py \\
+        --mode single --model glm5 --timing batch --repeat 10000 \\
+        --cases glm5_prefill_m512
 """
 
 from __future__ import annotations
@@ -526,6 +530,7 @@ def _run_one_case_impl(
             "samples_us": [],
             "total_us": total_us,
             "mean_us": avg_us,
+            # A/B gates key off p50/p95; in batch mode they equal the average.
             "p50_us": avg_us,
             "p95_us": avg_us,
             "std_us": 0.0,
@@ -885,6 +890,10 @@ def main() -> None:
         "--timing",
         choices=["event", "batch"],
         default="event",
+        help=(
+            "event: per-repeat CUDA events (mean/p50/p95/std). "
+            "batch: one event around all repeats (average latency)."
+        ),
     )
     parser.add_argument("--cases", nargs="*", default=[])
     parser.add_argument("--output-json", type=str, default="")
