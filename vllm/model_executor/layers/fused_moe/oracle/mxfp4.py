@@ -70,6 +70,7 @@ class Mxfp4MoeBackend(Enum):
     # Marlin
     BATCHED_MARLIN = "BATCHED_MARLIN"
     MARLIN = "MARLIN"
+    MARLIN_OR_HUMMING = "MARLIN_OR_HUMMING"
     # ROCm AITER backends
     AITER_MXFP4_BF16 = "AITER_MXFP4_BF16"  # W4A16: CK kernel
     # Keep the legacy name as an alias while the ROCm split backend rename settles.
@@ -177,6 +178,13 @@ def backend_to_kernel_cls(
 
         return [MarlinExperts]
 
+    elif backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+        from vllm.model_executor.layers.fused_moe.experts.marlin_humming_moe import (
+            MarlinOrHummingExperts,
+        )
+
+        return [MarlinOrHummingExperts]
+
     elif backend == Mxfp4MoeBackend.BATCHED_MARLIN:
         from vllm.model_executor.layers.fused_moe.experts.marlin_moe import (
             BatchedMarlinExperts,
@@ -248,6 +256,7 @@ def map_mxfp4_backend(runner_backend: MoEBackend) -> list[Mxfp4MoeBackend]:
         "triton_unfused": [Mxfp4MoeBackend.TRITON_UNFUSED],
         "humming": [Mxfp4MoeBackend.HUMMING],
         "marlin": [Mxfp4MoeBackend.MARLIN],
+        "marlin_humming": [Mxfp4MoeBackend.MARLIN_OR_HUMMING],
         "aiter": [
             Mxfp4MoeBackend.AITER_MXFP4_BF16,
             Mxfp4MoeBackend.AITER_MXFP4_FP8,
@@ -667,6 +676,9 @@ def mxfp4_round_up_hidden_size_and_intermediate_size(
             hidden_size = round_up(hidden_size, 128)
         else:
             hidden_size = round_up(hidden_size, 256)
+    elif backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+        intermediate_size = round_up(intermediate_size, 128)
+        hidden_size = round_up(hidden_size, 256)
     elif backend in TRTLLM_BACKENDS:
         intermediate_size = round_up(intermediate_size, 256)
         hidden_size = round_up(hidden_size, 256)
@@ -741,6 +753,21 @@ def convert_gpt_oss_weight_to_mxfp4_moe_kernel_format(
             layer.w2_weight_scale,
             getattr(layer, "w13_bias", None),
             getattr(layer, "w2_bias", None),
+        )
+    elif mxfp4_backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+        from vllm.model_executor.layers.fused_moe.experts.marlin_humming_moe import (
+            prepare_moe_mxfp4_layer_for_marlin_or_humming,
+        )
+
+        return prepare_moe_mxfp4_layer_for_marlin_or_humming(
+            layer,
+            w13_weight,
+            w2_weight,
+            w13_weight_scale,
+            w2_weight_scale,
+            w13_bias,
+            w2_bias,
+            quant_method="gpt_oss_mxfp4",
         )
     elif mxfp4_backend in (
         Mxfp4MoeBackend.MARLIN,
@@ -1282,6 +1309,22 @@ def convert_weight_to_mxfp4_moe_kernel_format(
             getattr(layer, "w2_bias", None),
         )
 
+    if mxfp4_backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+        from vllm.model_executor.layers.fused_moe.experts.marlin_humming_moe import (
+            prepare_moe_mxfp4_layer_for_marlin_or_humming,
+        )
+
+        return prepare_moe_mxfp4_layer_for_marlin_or_humming(
+            layer,
+            w13_weight,
+            w2_weight,
+            w13_weight_scale,
+            w2_weight_scale,
+            w13_bias,
+            w2_bias,
+            quant_method="mxfp4",
+        )
+
     if mxfp4_backend in (Mxfp4MoeBackend.MARLIN, Mxfp4MoeBackend.BATCHED_MARLIN):
         from vllm.model_executor.layers.quantization.utils.marlin_utils_fp4 import (
             prepare_moe_mxfp4_layer_for_marlin,
@@ -1644,6 +1687,19 @@ def make_mxfp4_moe_quant_config(
             gemm1_beta=gemm1_beta,
             gemm1_clamp_limit=swiglu_limit,
         )
+    elif mxfp4_backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+        from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+        from vllm.model_executor.layers.quantization.utils.humming_utils import (
+            get_humming_moe_quant_config,
+        )
+
+        assert isinstance(layer, FusedMoE)
+        return get_humming_moe_quant_config(
+            layer,
+            gemm1_alpha=gemm1_alpha,
+            gemm1_beta=gemm1_beta,
+            gemm1_clamp_limit=swiglu_limit,
+        )
     else:
         return ocp_mx_moe_quant_config(
             quant_dtype="mxfp4",
@@ -1679,8 +1735,11 @@ def make_mxfp4_moe_kernel(
 
     logger.info_once("Using %s", prepare_finalize.__class__.__name__)
 
-    extra_kwargs = {}
-    if mxfp4_backend == Mxfp4MoeBackend.HUMMING:
+    extra_kwargs: dict = {}
+    if mxfp4_backend in (
+        Mxfp4MoeBackend.HUMMING,
+        Mxfp4MoeBackend.MARLIN_OR_HUMMING,
+    ):
         assert layer is not None
         extra_kwargs["layer"] = layer
 
@@ -1688,19 +1747,59 @@ def make_mxfp4_moe_kernel(
     if prepare_finalize.activation_format == mk.FusedMoEActivationFormat.BatchedExperts:
         max_num_tokens = prepare_finalize.max_num_tokens_per_rank()
         assert max_num_tokens is not None
-        experts = experts_cls(
-            moe_config=moe_config,
-            quant_config=moe_quant_config,
-            max_num_tokens=max_num_tokens,
-            num_dispatchers=prepare_finalize.num_dispatchers(),
-            **extra_kwargs,
-        )
+        if mxfp4_backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+            assert layer is not None
+            marlin_quant_config = make_mxfp4_moe_quant_config(
+                mxfp4_backend=Mxfp4MoeBackend.MARLIN,
+                w1_scale=layer._marlin_w13_weight_scale,
+                w2_scale=layer._marlin_w2_weight_scale,
+                w1_bias=getattr(layer, "_marlin_w13_bias", None),
+                w2_bias=getattr(layer, "_marlin_w2_bias", None),
+                gemm1_alpha=moe_quant_config.gemm1_alpha,
+                gemm1_beta=moe_quant_config.gemm1_beta,
+                swiglu_limit=moe_quant_config.gemm1_clamp_limit,
+            )
+            experts = experts_cls(
+                moe_config=moe_config,
+                quant_config=moe_quant_config,
+                marlin_quant_config=marlin_quant_config,
+                max_num_tokens=max_num_tokens,
+                num_dispatchers=prepare_finalize.num_dispatchers(),
+                **extra_kwargs,
+            )
+        else:
+            experts = experts_cls(
+                moe_config=moe_config,
+                quant_config=moe_quant_config,
+                max_num_tokens=max_num_tokens,
+                num_dispatchers=prepare_finalize.num_dispatchers(),
+                **extra_kwargs,
+            )
     else:
-        experts = experts_cls(
-            moe_config=moe_config,
-            quant_config=moe_quant_config,
-            **extra_kwargs,
-        )
+        if mxfp4_backend == Mxfp4MoeBackend.MARLIN_OR_HUMMING:
+            assert layer is not None
+            marlin_quant_config = make_mxfp4_moe_quant_config(
+                mxfp4_backend=Mxfp4MoeBackend.MARLIN,
+                w1_scale=layer._marlin_w13_weight_scale,
+                w2_scale=layer._marlin_w2_weight_scale,
+                w1_bias=getattr(layer, "_marlin_w13_bias", None),
+                w2_bias=getattr(layer, "_marlin_w2_bias", None),
+                gemm1_alpha=moe_quant_config.gemm1_alpha,
+                gemm1_beta=moe_quant_config.gemm1_beta,
+                swiglu_limit=moe_quant_config.gemm1_clamp_limit,
+            )
+            experts = experts_cls(
+                moe_config=moe_config,
+                quant_config=moe_quant_config,
+                marlin_quant_config=marlin_quant_config,
+                **extra_kwargs,
+            )
+        else:
+            experts = experts_cls(
+                moe_config=moe_config,
+                quant_config=moe_quant_config,
+                **extra_kwargs,
+            )
 
     kernel = mk.FusedMoEKernel(
         prepare_finalize,

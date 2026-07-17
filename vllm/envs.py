@@ -164,6 +164,7 @@ if TYPE_CHECKING:
     VLLM_HUMMING_INPUT_QUANT_CONFIG: dict[str, Any] | None = None
     VLLM_HUMMING_USE_F16_ACCUM: bool = False
     VLLM_HUMMING_MOE_GEMM_TYPE: Literal["indexed", "grouped", "auto"] | None = None
+    VLLM_MARLIN_HUMMING_M_THRESHOLD: int = 512
     VLLM_MXFP4_USE_MARLIN: bool | None = None
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
@@ -1363,6 +1364,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # if None, choose better gemm type automatically
     "VLLM_HUMMING_MOE_GEMM_TYPE": lambda: os.environ.get(
         "VLLM_HUMMING_MOE_GEMM_TYPE", None
+    ),
+    # Token threshold for Marlin/Humming hybrid MoE (Marlin if M <= threshold).
+    "VLLM_MARLIN_HUMMING_M_THRESHOLD": lambda: int(
+        os.environ.get("VLLM_MARLIN_HUMMING_M_THRESHOLD", "512")
     ),
     # Whether to use DeepEPLL kernels for NVFP4 quantization and dispatch method
     # only supported on Blackwell GPUs and with
