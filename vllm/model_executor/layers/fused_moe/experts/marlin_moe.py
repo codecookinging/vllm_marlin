@@ -53,8 +53,8 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
 
-_SHORT_BATCH_M_THRESHOLD = 2048
-_SHORT_BATCH_MOE_BLOCK_SIZE = 16
+_SHORT_BATCH_M_THRESHOLD = 512
+_SHORT_BATCH_MOE_BLOCK_SIZE = 8
 _MOE_BLOCK_SIZE_CANDIDATES = [64, 48, 32, 16, 8]
 
 
