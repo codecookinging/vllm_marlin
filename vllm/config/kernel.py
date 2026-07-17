@@ -183,6 +183,8 @@ class KernelConfig:
     - "flashinfer_b12x": Use FlashInfer CuteDSL fused MoE for SM12x
       (RTX Pro 6000 / DGX Spark)
     - "marlin": Use Marlin kernels (weight-only quantization)
+    - "marlin_humming": Use Marlin for small batches and Humming for large
+      batches (w4a16 MXFP4 hybrid)
     - "humming": Use Humming Mixed Precision kernels
     - "triton_unfused": Use Triton unfused MoE kernels
     - "aiter": Use AMD AITer kernels (ROCm only)
